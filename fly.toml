@@ -1,0 +1,20 @@
+app = 'veille-tech-dauvel'
+primary_region = 'cdg'
+
+[build]
+
+[mounts]
+  source = 'veille_data'
+  destination = '/data'
+
+[[vm]]
+  memory = '512mb'
+  cpu_kind = 'shared'
+  cpus = 1
+
+[deploy]
+  strategy = 'immediate'
+
+[[services]]
+  min_machines_running = 1
+  max_machines_running = 1

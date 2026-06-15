@@ -1,0 +1,28 @@
+{
+  "name": "veille_tech",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "25.9.3",
+    "@types/node-telegram-bot-api": "0.64.15",
+    "tsx": "4.22.4",
+    "typescript": "6.0.3"
+  },
+  "dependencies": {
+    "@mistralai/mistralai": "2.2.5",
+    "@tavily/core": "0.7.6",
+    "better-sqlite3": "12.10.1",
+    "dotenv": "17.4.2",
+    "node-telegram-bot-api": "1.1.0",
+    "rss-parser": "3.13.0"
+  }
+}
