@@ -5,9 +5,10 @@ export const config = {
     mistral: {
         apiKey: process.env.MISTRAL_API_KEY || '',
     },
-    telegram: {
-        token: process.env.TELEGRAM_BOT_TOKEN || '',
-        chatId: process.env.TELEGRAM_CHAT_ID || '',
+    discord: {
+        token: process.env.DISCORD_BOT_TOKEN || '',
+        clientId: process.env.DISCORD_CLIENT_ID || '',
+        channelId: process.env.DISCORD_CHANNEL_ID || '',
     },
     db: {
         path: process.env.DB_PATH || './data/veille.db',

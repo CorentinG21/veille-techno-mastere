@@ -1,19 +1,18 @@
 {
-  "name": "veille_tech",
+  "name": "veille-techno-mastere",
   "version": "1.0.0",
-  "description": "",
+  "description": "Veille technologique automatisée — Développement Web & Sécurité",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
-  "author": "",
+  "author": "Corentin Godon",
   "license": "ISC",
   "type": "module",
   "devDependencies": {
     "@types/better-sqlite3": "7.6.13",
     "@types/node": "25.9.3",
-    "@types/node-telegram-bot-api": "0.64.15",
     "tsx": "4.22.4",
     "typescript": "6.0.3"
   },
@@ -21,8 +20,8 @@
     "@mistralai/mistralai": "2.2.5",
     "@tavily/core": "0.7.6",
     "better-sqlite3": "12.10.1",
+    "discord.js": "14.26.4",
     "dotenv": "17.4.2",
-    "node-telegram-bot-api": "1.1.0",
     "rss-parser": "3.13.0"
   }
 }
