@@ -1,6 +1,6 @@
 import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ChatInputCommandInteraction, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { config } from '../config/index.js';
-import { exportAllArticles, getRecentArticles, searchArticles, insertArticle, articleExists, getRSSSources, addRSSSource, removeRSSSource } from '../storage/database.js';
+import { exportAllArticles, getRecentArticles, searchArticles, insertArticle, articleExists, getRSSSources, addRSSSource, removeRSSSource, savePendingValidation, deletePendingValidation, getAllPendingValidations, saveMoreInfo, getMoreInfo } from '../storage/database.js';
 import { tavily } from '@tavily/core';
 import { Mistral } from '@mistralai/mistralai';
 import { writeFileSync } from 'fs';
@@ -30,7 +30,6 @@ interface PendingArticle {
 }
 
 const pendingArticles = new Map<string, PendingArticle>();
-const moreInfoArticles = new Map<string, { title: string; summary: string; url: string }>();
 let lastDigestDate: string | null = null;
 
 const FRONTEND_SOURCES = ['Dev.to', 'Smashing Magazine', 'This Week in React', 'web.dev (Google)', 'Alsacréations'];
@@ -54,7 +53,7 @@ async function postToThemeChannel(article: PendingArticle) {
     const message = `📌 **${article.title}**\n📰 ${article.source} · ${labels[category]}\n📝 ${article.summary}\n🔗 <${article.url}>`;
 
     const id = randomUUID();
-    moreInfoArticles.set(id, { title: article.title, summary: article.summary, url: article.url });
+    saveMoreInfo(id, { title: article.title, summary: article.summary, url: article.url });
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder().setCustomId(`moreinfo_${id}`).setLabel('🔍 En savoir plus').setStyle(ButtonStyle.Secondary),
@@ -114,7 +113,7 @@ function startWeeklyDigestScheduler() {
     setInterval(async () => {
         const now = new Date();
         const parisDate = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Paris' }));
-        const todayStr = parisDate.toISOString().split('T')[0];
+        const todayStr = now.toLocaleDateString('en-CA', { timeZone: 'Europe/Paris' }); // YYYY-MM-DD heure Paris
 
         // Lundi = 1, entre 8h et 9h
         if (parisDate.getDay() === 1 && parisDate.getHours() === 8 && lastDigestDate !== todayStr) {
@@ -184,6 +183,16 @@ export function startBot() {
         console.log(`✅ Connecté en tant que ${client.user?.tag}`);
         await registerCommands();
         startWeeklyDigestScheduler();
+        // Recharge les articles en attente depuis la DB après un redémarrage
+        for (const row of getAllPendingValidations()) {
+            pendingArticles.set(row.id, {
+                title: row.title, url: row.url, source: row.source,
+                summary: row.summary, content: row.content,
+                published_at: row.published_at,
+                score: row.score ?? undefined,
+            });
+        }
+        console.log(`📋 ${pendingArticles.size} articles en attente rechargés depuis la DB`);
     });
 
     client.on('interactionCreate', async (interaction) => {
@@ -194,7 +203,7 @@ export function startBot() {
 
             // Bouton "En savoir plus" sur les salons thématiques
             if (action === 'moreinfo') {
-                const info = moreInfoArticles.get(id);
+                const info = getMoreInfo(id);
                 if (!info) {
                     await interaction.reply({ content: '⚠️ Info non disponible.', ephemeral: true });
                     return;
@@ -249,6 +258,7 @@ Sois concis et actionnable. N'utilise JAMAIS de tableaux Markdown (pas de |).`,
             }
 
             pendingArticles.delete(id);
+            deletePendingValidation(id);
             return;
         }
 
@@ -549,16 +559,24 @@ Réponds uniquement avec le résumé, sans introduction.`
 
             const id = randomUUID();
             pendingArticles.set(id, article);
+            savePendingValidation(id, article);
 
-            const scoreStr = '';
-            const message = `🆕 **Nouvel article à valider** *(soumis manuellement)*\n\n📌 **${title}**\n📰 Manuel\n${scoreStr}📝 ${summary}\n🔗 <${url}>`;
+            const message = `🆕 **Nouvel article à valider** *(soumis manuellement)*\n\n📌 **${title}**\n📰 Manuel\n📝 ${summary}\n🔗 <${url}>`;
 
             const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
                 new ButtonBuilder().setCustomId(`validate_${id}`).setLabel('✅ Valider').setStyle(ButtonStyle.Success),
                 new ButtonBuilder().setCustomId(`reject_${id}`).setLabel('❌ Rejeter').setStyle(ButtonStyle.Danger),
             );
 
-            await interaction.followUp({ content: message, components: [row] });
+            // Envoie dans #veille-validation, pas dans le salon de commande
+            const validationChannelId = config.discord.channels.validation || config.discord.channelId;
+            const validationChannel = await client.channels.fetch(validationChannelId).catch(() => null);
+            if (validationChannel && validationChannel.isTextBased()) {
+                await (validationChannel as any).send({ content: message, components: [row] });
+                await interaction.editReply('✅ Article envoyé dans #veille-validation pour validation.');
+            } else {
+                await interaction.editReply('❌ Impossible d\'accéder au salon de validation.');
+            }
         }
 
         if (interaction.commandName === 'export') {
@@ -602,6 +620,7 @@ export async function sendForValidation(articles: PendingArticle[]) {
     for (const a of articles) {
         const id = randomUUID();
         pendingArticles.set(id, a);
+        savePendingValidation(id, a);
 
         const scoreStr = a.score !== undefined ? `⭐ Score : ${a.score}/5\n` : '';
         const message = `🆕 **Nouvel article à valider**\n\n📌 **${a.title}**\n📰 ${a.source}\n${scoreStr}📝 ${a.summary ?? 'Résumé indisponible'}\n🔗 <${a.url}>`;
