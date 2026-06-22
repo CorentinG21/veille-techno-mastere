@@ -19,22 +19,33 @@ L'objectif est de construire un vrai pipeline d'intelligence : capturer l'inform
 ## 2. Architecture globale
 
 ```
-Sources RSS (Frontend / Backend / Sécurité)
-      ↓ (collecte toutes les 2h)
+Sources RSS (Frontend / Backend / Sécurité) + soumission manuelle /submit
+      ↓ (collecte toutes les 2h / à la demande)
 Collecteur TypeScript
       ↓ (texte brut)
-Mistral AI (API HTTPS) 🇫🇷
-      ↓ (résumé en français)
-Bot Discord — Validation manuelle (✅ Valider / ❌ Rejeter)
+Mistral AI — Scoring de pertinence (1-5) 🇫🇷
+      ↓ (score ≥ 4 uniquement)
+Mistral AI — Résumé en français 🇫🇷
+      ↓
+Bot Discord — Validation manuelle (✅ Valider / ❌ Rejeter) + affichage du score
       ↓ (si validé)
 SQLite (volume persistant Fly.io)
+      ↓ (routing automatique par thème)
+  ├── #veille-frontend   → Frontend & Frameworks JS
+  ├── #veille-backend    → Backend, API & Outillage
+  └── #veille-securite   → Sécurité Web
       ↓
 Bot Discord — Commandes slash
-  ├── /summary  → 5 derniers articles résumés
-  ├── /ask      → RAG local + Tavily + Mistral
-  ├── /export   → Export Markdown de la veille
-  ├── /analyze  → Analyse IA automatique de la veille
-  └── /infos    → Statut du système
+  ├── /summary   → 5 derniers articles résumés
+  ├── /ask       → RAG local + Tavily + Mistral
+  ├── /export    → Export Markdown de la veille
+  ├── /analyze   → Analyse IA automatique de la veille
+  ├── /submit    → Soumettre un article via URL
+  ├── /rss-list  → Lister les sources RSS
+  ├── /rss-add   → Ajouter une source RSS
+  ├── /rss-remove→ Supprimer une source RSS
+  ├── /infos     → Statut du système
+  └── /help      → Liste des commandes
 ```
 
 Tout le pipeline tourne sur **Fly.io (région Paris, cdg)** en continu.
@@ -47,6 +58,7 @@ Tout le pipeline tourne sur **Fly.io (région Paris, cdg)** en continu.
 |---|---|---|
 | **Runtime** | Node.js 20 + TypeScript | Typage fort, écosystème riche |
 | **Collecte RSS** | rss-parser | Léger, simple, sans dépendance lourde |
+| **IA — Scoring** | Mistral AI (`mistral-small-latest`) | Souveraineté française 🇫🇷 |
 | **IA — Résumés** | Mistral AI (`mistral-small-latest`) | Souveraineté française 🇫🇷 |
 | **IA — RAG /ask** | Mistral AI + Tavily Search | Recherche locale + fallback web |
 | **IA — /analyze** | Mistral AI | Analyse automatique de la veille |
@@ -59,7 +71,7 @@ Tout le pipeline tourne sur **Fly.io (région Paris, cdg)** en continu.
 
 ## 4. Sources de collecte
 
-Organisées selon les 3 axes de veille définis dans le dossier de veille E1 :
+Les sources par défaut sont hardcodées dans `src/collectors/rss.ts`. Elles peuvent être surchargées dynamiquement via les commandes `/rss-add` / `/rss-remove` (stockées en base SQLite). Si aucune source n'est en base, les sources par défaut s'appliquent.
 
 | Axe | Source | Type |
 |---|---|---|
@@ -91,13 +103,13 @@ veille-tech-pkm/
 │   ├── config/
 │   │   └── index.ts            ← Variables d'environnement centralisées
 │   ├── collectors/
-│   │   └── rss.ts              ← Collecte des flux RSS
+│   │   └── rss.ts              ← Collecte des flux RSS (sources DB ou défaut)
 │   ├── processors/
-│   │   └── summarizer.ts       ← Résumé IA via Mistral (retry 429)
+│   │   └── summarizer.ts       ← Scoring + Résumé IA via Mistral (retry 429)
 │   ├── storage/
-│   │   └── database.ts         ← SQLite (CRUD + recherche + export)
+│   │   └── database.ts         ← SQLite (CRUD + recherche + export + sources RSS)
 │   └── bot/
-│       └── discord.ts          ← Bot Discord (commandes + validation)
+│       └── discord.ts          ← Bot Discord (commandes + validation + routing thème)
 ├── Dockerfile                  ← Image Docker Alpine Node.js 20
 ├── fly.toml                    ← Config Fly.io (région cdg, volume)
 ├── context.md                  ← Fichier de cadrage pour Claude (analyse de veille)
@@ -112,19 +124,30 @@ veille-tech-pkm/
 
 ### 6.1 Collecte, scoring et résumé (toutes les 2h)
 
-1. Le script fetch chaque flux RSS séquentiellement (avec délai anti-rate-limit), 3 articles max par source
-2. Les articles déjà vus (en base OU déjà analysés lors d'une collecte précédente, validés ou rejetés) sont filtrés en amont via la table `seen_urls`
-3. Pour chaque article restant, Mistral AI attribue un **score de pertinence de 1 à 5** par rapport aux 3 axes de veille (Frontend, Backend, Sécurité). L'article est marqué comme "vu" immédiatement après ce scoring, qu'il soit retenu ou non
-4. Seuls les articles avec un score ≥ 4 sont résumés en 3-4 phrases en français
-5. L'article résumé est envoyé sur Discord avec deux boutons : **✅ Valider** / **❌ Rejeter**
-6. Si validé → insertion en base SQLite. Si rejeté → l'article reste ignoré définitivement (déjà marqué "vu")
-7. Système de retry automatique en cas de rate limit Mistral
+1. Le collecteur fetch chaque flux RSS séquentiellement (délai anti-rate-limit), 3 articles max par source
+2. Les articles déjà vus (en base OU déjà analysés) sont filtrés via la table `seen_urls`
+3. Mistral AI attribue un **score de pertinence de 1 à 5** par rapport aux 3 axes de veille. L'article est marqué "vu" immédiatement après le scoring
+4. Seuls les articles avec un score **≥ 4** sont résumés en 3-4 phrases en français
+5. L'article résumé est envoyé sur Discord avec le score affiché (`⭐ Score : X/5`) et deux boutons : **✅ Valider** / **❌ Rejeter**
+6. Si validé → insertion en base SQLite + post automatique dans le salon thématique (`#veille-frontend`, `#veille-backend` ou `#veille-securite`)
+7. Système de retry automatique en cas de rate limit Mistral (3 tentatives, délai 30s)
 
-### 6.2 Commande /summary
+### 6.2 Routing automatique par thème
+
+Quand un article est validé, il est automatiquement posté dans le bon salon Discord selon sa source :
+
+| Source | Salon |
+|---|---|
+| Dev.to, Smashing Magazine, This Week in React, web.dev, Alsacréations | `#veille-frontend` |
+| Node Weekly, JavaScript Weekly, TypeScript Blog, Bun Blog, GitHub Changelog | `#veille-backend` |
+| The Hacker News, CERT-FR (ANSSI), Zero Day Initiative | `#veille-securite` |
+| Articles soumis via `/submit` | `#veille-backend` par défaut |
+
+### 6.3 Commande /summary
 
 Retourne les 5 derniers articles validés et stockés en base, avec titre, source, résumé et lien.
 
-### 6.3 Commande /ask [question]
+### 6.4 Commande /ask [question]
 
 Pipeline RAG en 3 étapes :
 
@@ -132,13 +155,13 @@ Pipeline RAG en 3 étapes :
 2. **Fallback web** : si moins de 2 résultats locaux → appel Tavily Search API (3 résultats)
 3. **Synthèse Mistral** : contexte local + web envoyé à Mistral pour une réponse structurée en français
 
-### 6.4 Commande /export
+### 6.5 Commande /export
 
 Génère un fichier Markdown complet de tous les articles résumés et l'envoie directement en pièce jointe Discord. Le fichier est aussi sauvegardé sur le volume persistant Fly.io (`/data/veille_export_YYYY-MM-DD.md`).
 
 Usage avec Claude : charger l'export + `context.md` dans Claude pour rédiger la note de veille E1.
 
-### 6.5 Commande /analyze
+### 6.6 Commande /analyze
 
 Analyse automatique de la veille par Mistral AI :
 - Top 3 tendances détectées (avec nombre d'articles)
@@ -146,13 +169,40 @@ Analyse automatique de la veille par Mistral AI :
 - Lacunes détectées (sujets sous-représentés)
 - Recommandations (nouvelles sources ou sujets à surveiller)
 
-### 6.6 Validation manuelle des articles
+### 6.7 Commande /submit [url]
 
-Chaque article collecté est envoyé sur Discord avec des boutons de validation avant tout enregistrement en base. Cela permet de filtrer le bruit (articles hors-sujet, doublons sémantiques, contenu non pertinent) avant qu'il ne pollue la base de connaissances.
+Permet de soumettre manuellement un article via son URL sans passer par le flux RSS :
+1. Le bot fetch le contenu de la page
+2. Mistral génère un résumé en français
+3. L'article est envoyé en validation Discord avec les boutons ✅ / ❌ comme un article RSS normal
 
-### 6.7 Import manuel d'articles
+### 6.8 Gestion des sources RSS
 
-Le script `src/import-articles.ts` permet d'importer des articles externes (fichiers `.md` au format `Title / URL Source / Markdown Content`) directement dans la base, avec génération automatique du résumé Mistral :
+Les sources RSS sont gérables dynamiquement depuis Discord :
+
+| Commande | Description |
+|---|---|
+| `/rss-list` | Liste toutes les sources actives avec leur ID |
+| `/rss-add [nom] [url]` | Ajoute une source (initialise les sources par défaut si première ajout) |
+| `/rss-remove [id]` | Supprime une source par son ID |
+
+Les sources sont stockées dans la table SQLite `rss_sources`. Tant qu'aucune source n'est en base, les 13 sources par défaut s'appliquent.
+
+### 6.9 Commande /help
+
+Affiche la liste complète des commandes disponibles (message visible uniquement par toi).
+
+### 6.10 Commande /infos
+
+Affiche le statut du système : dernière collecte, prochaine collecte, nombre d'articles en base, dernier article collecté, infrastructure.
+
+### 6.11 Validation manuelle des articles
+
+Chaque article collecté est envoyé sur Discord avec son **score de pertinence** (`⭐ Score : X/5`) et des boutons de validation avant tout enregistrement en base. Cela permet de filtrer le bruit avant qu'il ne pollue la base de connaissances.
+
+### 6.12 Import manuel d'articles (script)
+
+Le script `src/import-articles.ts` permet d'importer des articles externes (fichiers `.md`) directement dans la base, avec génération automatique du résumé Mistral :
 
 ```bash
 npx tsx src/import-articles.ts <chemin-du-dossier>
@@ -163,17 +213,30 @@ npx tsx src/import-articles.ts <chemin-du-dossier>
 ## 7. Variables d'environnement
 
 ```bash
-MISTRAL_API_KEY=          # Clé API Mistral AI (mistral.ai)
-DISCORD_BOT_TOKEN=        # Token du bot Discord
-DISCORD_CLIENT_ID=        # Application ID Discord (pour les commandes slash)
-DISCORD_CHANNEL_ID=       # ID du salon pour la validation et les commandes
-TAVILY_API_KEY=           # Clé API Tavily Search (fallback web /ask)
-DB_PATH=./data/veille.db  # Chemin SQLite (monté sur /data sur Fly.io)
+MISTRAL_API_KEY=                # Clé API Mistral AI (mistral.ai)
+DISCORD_BOT_TOKEN=              # Token du bot Discord
+DISCORD_CLIENT_ID=              # Application ID Discord (commandes slash)
+DISCORD_CHANNEL_ID=             # ID du salon principal (validation + commandes)
+DISCORD_CHANNEL_FRONTEND=       # ID du salon #veille-frontend
+DISCORD_CHANNEL_BACKEND=        # ID du salon #veille-backend
+DISCORD_CHANNEL_SECURITE=       # ID du salon #veille-securite
+TAVILY_API_KEY=                 # Clé API Tavily Search (fallback web /ask)
+DB_PATH=./data/veille.db        # Chemin SQLite (monté sur /data sur Fly.io)
 ```
 
 ---
 
-## 8. Déploiement
+## 8. Schéma de la base de données SQLite
+
+| Table | Rôle |
+|---|---|
+| `articles` | Articles validés (titre, url, source, résumé, contenu, date) |
+| `seen_urls` | URLs déjà traitées (évite les doublons entre collectes) |
+| `rss_sources` | Sources RSS gérées dynamiquement via Discord |
+
+---
+
+## 9. Déploiement
 
 ### Infrastructure
 
@@ -212,39 +275,6 @@ COPY package*.json ./
 RUN npm install
 COPY . .
 CMD ["npx", "tsx", "src/index.ts"]
-```
-
----
-
-## 9. Schéma de communication
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                      Fly.io (Paris cdg)                  │
-│                                                          │
-│  Sources RSS (Frontend / Backend / Sécurité)             │
-│       ↓ (toutes les 2h)                                  │
-│  Collecteur TypeScript ──► Mistral AI 🇫🇷                │
-│       │           ◄────────── résumé FR                  │
-│       ↓                                                  │
-│  Bot Discord — Validation (✅ / ❌)                       │
-│       ↓ (si validé)                                       │
-│    SQLite (volume persistant)                            │
-│       ↓                                                  │
-│  Bot Discord (slash commands)                            │
-│       ├──► /summary  → lecture SQLite                    │
-│       ├──► /ask      → SQLite + Tavily + Mistral         │
-│       ├──► /export   → génération fichier .md            │
-│       ├──► /analyze  → Mistral analyse globale           │
-│       └──► /infos    → statut système                    │
-│                                                          │
-└──────────────────────────────┬───────────────────────────┘
-                               │ HTTPS (Gateway WebSocket)
-                               ▼
-                       Discord API
-                               │
-                               ▼
-                    Corentin Godon
 ```
 
 ---
@@ -291,6 +321,6 @@ en t'appuyant uniquement sur mes articles collectés.
 
 | Compétence | Sections couvertes |
 |---|---|
-| **C1 — Organiser un système de veille** | Sources §4, Architecture §2, Pipeline §6 |
-| **C2 — Analyser les informations** | Résumés Mistral §6.1, RAG /ask §6.3, /analyze §6.5, Validation §6.6 |
-| **C3 — Expérimenter et mobiliser** | Déploiement §8, Claude §11 |
+| **C1 — Organiser un système de veille** | Sources §4, Architecture §2, Pipeline §6, Gestion RSS §6.8 |
+| **C2 — Analyser les informations** | Scoring §6.1, Résumés Mistral §6.1, RAG /ask §6.4, /analyze §6.6, Validation §6.11 |
+| **C3 — Expérimenter et mobiliser** | Déploiement §9, /submit §6.7, Routing thématique §6.2, Claude §11 |
