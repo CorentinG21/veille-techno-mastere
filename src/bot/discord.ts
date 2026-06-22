@@ -31,6 +31,29 @@ interface PendingArticle {
 
 const pendingArticles = new Map<string, PendingArticle>();
 
+const FRONTEND_SOURCES = ['Dev.to', 'Smashing Magazine', 'This Week in React', 'web.dev (Google)', 'Alsacréations'];
+const BACKEND_SOURCES = ['Node Weekly', 'JavaScript Weekly', 'TypeScript Blog (Microsoft)', 'Bun Blog', 'GitHub Changelog'];
+const SECURITE_SOURCES = ['The Hacker News', 'CERT-FR (ANSSI)', 'Zero Day Initiative'];
+
+function getCategory(source: string): 'frontend' | 'backend' | 'securite' {
+    if (FRONTEND_SOURCES.includes(source)) return 'frontend';
+    if (SECURITE_SOURCES.includes(source)) return 'securite';
+    return 'backend';
+}
+
+async function postToThemeChannel(article: PendingArticle) {
+    const category = getCategory(article.source);
+    const channelId = config.discord.channels[category];
+    if (!channelId) return;
+
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel || !channel.isTextBased()) return;
+
+    const labels: Record<string, string> = { frontend: '🎨 Frontend', backend: '⚙️ Backend', securite: '🔒 Sécurité' };
+    const message = `📌 **${article.title}**\n📰 ${article.source} · ${labels[category]}\n📝 ${article.summary}\n🔗 <${article.url}>`;
+    await (channel as any).send(message).catch(console.error);
+}
+
 const commands = [
     new SlashCommandBuilder().setName('summary').setDescription('Les 5 derniers articles résumés'),
     new SlashCommandBuilder().setName('ask').setDescription('Pose une question sur ta base de veille')
@@ -104,6 +127,7 @@ export function startBot() {
 
             if (action === 'validate') {
                 insertArticle(article);
+                await postToThemeChannel(article);
                 await interaction.update({
                     content: `✅ **Ajouté à la base !**\n\n📌 ${article.title}\n📰 ${article.source}`,
                     components: [],

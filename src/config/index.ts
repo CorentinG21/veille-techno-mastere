@@ -9,6 +9,11 @@ export const config = {
         token: process.env.DISCORD_BOT_TOKEN || '',
         clientId: process.env.DISCORD_CLIENT_ID || '',
         channelId: process.env.DISCORD_CHANNEL_ID || '',
+        channels: {
+            frontend: process.env.DISCORD_CHANNEL_FRONTEND || '',
+            backend: process.env.DISCORD_CHANNEL_BACKEND || '',
+            securite: process.env.DISCORD_CHANNEL_SECURITE || '',
+        },
     },
     db: {
         path: process.env.DB_PATH || './data/veille.db',
