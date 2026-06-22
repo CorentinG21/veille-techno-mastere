@@ -30,9 +30,10 @@ interface PendingArticle {
 }
 
 const pendingArticles = new Map<string, PendingArticle>();
+const moreInfoArticles = new Map<string, { title: string; summary: string; url: string }>();
+let lastDigestDate: string | null = null;
 
 const FRONTEND_SOURCES = ['Dev.to', 'Smashing Magazine', 'This Week in React', 'web.dev (Google)', 'Alsacréations'];
-const BACKEND_SOURCES = ['Node Weekly', 'JavaScript Weekly', 'TypeScript Blog (Microsoft)', 'Bun Blog', 'GitHub Changelog'];
 const SECURITE_SOURCES = ['The Hacker News', 'CERT-FR (ANSSI)', 'Zero Day Initiative'];
 
 function getCategory(source: string): 'frontend' | 'backend' | 'securite' {
@@ -51,7 +52,76 @@ async function postToThemeChannel(article: PendingArticle) {
 
     const labels: Record<string, string> = { frontend: '🎨 Frontend', backend: '⚙️ Backend', securite: '🔒 Sécurité' };
     const message = `📌 **${article.title}**\n📰 ${article.source} · ${labels[category]}\n📝 ${article.summary}\n🔗 <${article.url}>`;
-    await (channel as any).send(message).catch(console.error);
+
+    const id = randomUUID();
+    moreInfoArticles.set(id, { title: article.title, summary: article.summary, url: article.url });
+
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId(`moreinfo_${id}`).setLabel('🔍 En savoir plus').setStyle(ButtonStyle.Secondary),
+    );
+
+    await (channel as any).send({ content: message, components: [row] }).catch(console.error);
+}
+
+async function sendWeeklyDigest() {
+    const channelId = config.discord.channels.digest;
+    if (!channelId) return;
+
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel || !channel.isTextBased()) return;
+
+    const articles = exportAllArticles() as any[];
+    // Filtrer les articles de la semaine écoulée
+    const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const weekArticles = articles.filter(a => new Date(a.created_at) >= oneWeekAgo);
+
+    if (weekArticles.length === 0) {
+        await (channel as any).send('📭 **Digest hebdomadaire** — Aucun article validé cette semaine.').catch(console.error);
+        return;
+    }
+
+    const context = weekArticles.map((a: any) => `- [${a.source}] ${a.title} : ${a.summary}`).join('\n');
+
+    try {
+        const result = await mistralClient.chat.complete({
+            model: 'mistral-small-latest',
+            messages: [{
+                role: 'user',
+                content: `Tu es un assistant de veille technologique Full Stack. Nous sommes en 2026.
+
+Voici les ${weekArticles.length} articles validés cette semaine. Génère un digest hebdomadaire structuré en français :
+
+1. 🔥 Top tendances de la semaine
+2. 📌 Articles incontournables (2-3 max)
+3. 💡 Ce qu'il faut retenir cette semaine
+
+Articles :
+${context}
+
+Sois concis. N'utilise JAMAIS de tableaux Markdown (pas de |). Utilise uniquement du gras et des listes à puces (-).`
+            }]
+        });
+
+        const digest = result.choices?.[0]?.message?.content as string ?? 'Digest indisponible.';
+        const date = new Date().toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' });
+        await (channel as any).send(`📰 **Digest Veille Tech — semaine du ${date}**\n\n${digest}`).catch(console.error);
+    } catch (err) {
+        console.error('❌ Erreur digest hebdomadaire:', err);
+    }
+}
+
+function startWeeklyDigestScheduler() {
+    setInterval(async () => {
+        const now = new Date();
+        const parisDate = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Paris' }));
+        const todayStr = parisDate.toISOString().split('T')[0];
+
+        // Lundi = 1, entre 8h et 9h
+        if (parisDate.getDay() === 1 && parisDate.getHours() === 8 && lastDigestDate !== todayStr) {
+            lastDigestDate = todayStr;
+            await sendWeeklyDigest();
+        }
+    }, 60 * 60 * 1000); // vérifie toutes les heures
 }
 
 const commands = [
@@ -113,11 +183,50 @@ export function startBot() {
     client.once('ready', async () => {
         console.log(`✅ Connecté en tant que ${client.user?.tag}`);
         await registerCommands();
+        startWeeklyDigestScheduler();
     });
 
     client.on('interactionCreate', async (interaction) => {
         if (interaction.isButton()) {
-            const [action, id] = interaction.customId.split('_');
+            const parts = interaction.customId.split('_');
+            const action = parts[0];
+            const id = parts.slice(1).join('_');
+
+            // Bouton "En savoir plus" sur les salons thématiques
+            if (action === 'moreinfo') {
+                const info = moreInfoArticles.get(id);
+                if (!info) {
+                    await interaction.reply({ content: '⚠️ Info non disponible.', ephemeral: true });
+                    return;
+                }
+                await interaction.deferReply({ ephemeral: true });
+                try {
+                    const result = await mistralClient.chat.complete({
+                        model: 'mistral-small-latest',
+                        messages: [{
+                            role: 'user',
+                            content: `Tu es un assistant de veille technologique Full Stack. Nous sommes en 2026.
+
+Donne plus de détails sur cet article en français. Explique :
+- Le contexte technique
+- Les points clés à retenir pour un dev Full Stack
+- Des pistes pour aller plus loin
+
+Titre : ${info.title}
+Résumé : ${info.summary}
+URL : ${info.url}
+
+Sois concis et actionnable. N'utilise JAMAIS de tableaux Markdown (pas de |).`,
+                        }],
+                    });
+                    const answer = result.choices?.[0]?.message?.content as string ?? 'Réponse indisponible.';
+                    await interaction.editReply(`🔍 **${info.title}**\n\n${answer}`);
+                } catch {
+                    await interaction.editReply('❌ Erreur lors de la génération.');
+                }
+                return;
+            }
+
             const article = pendingArticles.get(id);
 
             if (!article) {
@@ -486,7 +595,8 @@ Réponds uniquement avec le résumé, sans introduction.`
 }
 
 export async function sendForValidation(articles: PendingArticle[]) {
-    const channel = await client.channels.fetch(config.discord.channelId).catch(() => null);
+    const validationChannelId = config.discord.channels.validation || config.discord.channelId;
+    const channel = await client.channels.fetch(validationChannelId).catch(() => null);
     if (!channel || !channel.isTextBased()) return;
 
     for (const a of articles) {

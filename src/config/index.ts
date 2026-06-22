@@ -13,6 +13,8 @@ export const config = {
             frontend: process.env.DISCORD_CHANNEL_FRONTEND || '',
             backend: process.env.DISCORD_CHANNEL_BACKEND || '',
             securite: process.env.DISCORD_CHANNEL_SECURITE || '',
+            validation: process.env.DISCORD_CHANNEL_VALIDATION || '',
+            digest: process.env.DISCORD_CHANNEL_DIGEST || '',
         },
     },
     db: {
