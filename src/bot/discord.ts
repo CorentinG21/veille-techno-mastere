@@ -46,6 +46,7 @@ const commands = [
         .addIntegerOption(opt => opt.setName('id').setDescription('ID de la source (visible dans /rss-list)').setRequired(true)),
     new SlashCommandBuilder().setName('submit').setDescription('Soumet un article via son URL pour résumé et validation')
         .addStringOption(opt => opt.setName('url').setDescription("URL de l'article").setRequired(true)),
+    new SlashCommandBuilder().setName('help').setDescription('Liste toutes les commandes disponibles'),
 ].map(cmd => cmd.toJSON());
 
 async function registerCommands() {
@@ -269,6 +270,29 @@ Sois concis et actionnable. IMPORTANT : n'utilise JAMAIS de tableaux Markdown (p
                 console.error('❌ Erreur analyse:', err);
                 await interaction.editReply('❌ Erreur lors de l\'analyse.');
             }
+        }
+
+        if (interaction.commandName === 'help') {
+            await interaction.reply({
+                content: `**🤖 Commandes disponibles**
+
+**📰 Veille**
+\`/summary\` — Affiche les 5 derniers articles validés (titre, source, résumé, lien)
+\`/ask [question]\` — Pose une question : recherche dans ta base + fallback web + réponse Mistral
+\`/export\` — Génère un fichier Markdown de toute ta veille et l'envoie en pièce jointe
+\`/analyze\` — Analyse automatique : tendances, sources actives, lacunes, recommandations
+\`/submit [url]\` — Soumet un article manuellement via son URL, Mistral le résume et tu valides
+
+**📡 Gestion des flux RSS**
+\`/rss-list\` — Liste toutes les sources RSS actives avec leur ID
+\`/rss-add [nom] [url]\` — Ajoute une nouvelle source RSS
+\`/rss-remove [id]\` — Supprime une source RSS par son ID
+
+**ℹ️ Système**
+\`/infos\` — Statut du bot : dernière collecte, prochaine collecte, nb articles en base
+\`/help\` — Affiche ce message`,
+                ephemeral: true,
+            });
         }
 
         if (interaction.commandName === 'rss-list') {
