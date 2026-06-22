@@ -1,10 +1,11 @@
 import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ChatInputCommandInteraction, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { config } from '../config/index.js';
-import { exportAllArticles, getRecentArticles, searchArticles, insertArticle } from '../storage/database.js';
+import { exportAllArticles, getRecentArticles, searchArticles, insertArticle, articleExists, getRSSSources, addRSSSource, removeRSSSource } from '../storage/database.js';
 import { tavily } from '@tavily/core';
 import { Mistral } from '@mistralai/mistralai';
 import { writeFileSync } from 'fs';
 import { randomUUID } from 'crypto';
+import { DEFAULT_RSS_SOURCES } from '../collectors/rss.js';
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const tavilyClient = tavily({ apiKey: config.tavily.apiKey });
@@ -25,6 +26,7 @@ interface PendingArticle {
     summary: string;
     content: string;
     published_at: string;
+    score?: number;
 }
 
 const pendingArticles = new Map<string, PendingArticle>();
@@ -36,6 +38,14 @@ const commands = [
     new SlashCommandBuilder().setName('export').setDescription('Exporte ta veille en Markdown'),
     new SlashCommandBuilder().setName('analyze').setDescription('Analyse automatique de ta veille'),
     new SlashCommandBuilder().setName('infos').setDescription('Statut et informations du système'),
+    new SlashCommandBuilder().setName('rss-list').setDescription('Liste toutes les sources RSS actives'),
+    new SlashCommandBuilder().setName('rss-add').setDescription('Ajoute une source RSS')
+        .addStringOption(opt => opt.setName('nom').setDescription('Nom de la source').setRequired(true))
+        .addStringOption(opt => opt.setName('url').setDescription('URL du flux RSS').setRequired(true)),
+    new SlashCommandBuilder().setName('rss-remove').setDescription('Supprime une source RSS par son ID')
+        .addIntegerOption(opt => opt.setName('id').setDescription('ID de la source (visible dans /rss-list)').setRequired(true)),
+    new SlashCommandBuilder().setName('submit').setDescription('Soumet un article via son URL pour résumé et validation')
+        .addStringOption(opt => opt.setName('url').setDescription("URL de l'article").setRequired(true)),
 ].map(cmd => cmd.toJSON());
 
 async function registerCommands() {
@@ -261,6 +271,139 @@ Sois concis et actionnable. IMPORTANT : n'utilise JAMAIS de tableaux Markdown (p
             }
         }
 
+        if (interaction.commandName === 'rss-list') {
+            await interaction.deferReply();
+            const dbSources = getRSSSources();
+            const sources = dbSources.length > 0 ? dbSources : DEFAULT_RSS_SOURCES.map((s, i) => ({ id: i + 1, ...s }));
+            const isDefault = dbSources.length === 0;
+
+            const lines = sources.map(s => `\`${s.id}\` — **${s.name}**\n└ ${s.url}`).join('\n\n');
+            await interaction.editReply(
+                `📡 **Sources RSS actives (${sources.length})** ${isDefault ? '*(sources par défaut)*' : ''}\n\n${lines}`
+            );
+        }
+
+        if (interaction.commandName === 'rss-add') {
+            await interaction.deferReply();
+            const nom = interaction.options.getString('nom', true);
+            const url = interaction.options.getString('url', true);
+
+            // Vérifie que c'est une URL valide
+            try { new URL(url); } catch {
+                await interaction.editReply('❌ URL invalide.');
+                return;
+            }
+
+            // Si c'est la première source ajoutée, on initialise avec les sources par défaut d'abord
+            const existing = getRSSSources();
+            if (existing.length === 0) {
+                for (const s of DEFAULT_RSS_SOURCES) addRSSSource(s.name, s.url);
+            }
+
+            const ok = addRSSSource(nom, url);
+            await interaction.editReply(
+                ok ? `✅ Source ajoutée : **${nom}**\n└ ${url}` : `❌ Cette URL est déjà dans la liste.`
+            );
+        }
+
+        if (interaction.commandName === 'rss-remove') {
+            await interaction.deferReply();
+            const id = interaction.options.getInteger('id', true);
+            const ok = removeRSSSource(id);
+            await interaction.editReply(
+                ok ? `✅ Source \`${id}\` supprimée.` : `❌ Aucune source trouvée avec l'ID \`${id}\`. Utilise /rss-list pour voir les IDs.`
+            );
+        }
+
+        if (interaction.commandName === 'submit') {
+            await interaction.deferReply();
+            const url = interaction.options.getString('url', true);
+
+            try { new URL(url); } catch {
+                await interaction.editReply('❌ URL invalide.');
+                return;
+            }
+
+            if (articleExists(url)) {
+                await interaction.editReply('⚠️ Cet article est déjà dans ta base de veille.');
+                return;
+            }
+
+            await interaction.editReply('⏳ Récupération et résumé en cours...');
+
+            // Fetch le contenu de la page
+            let title = url;
+            let content = '';
+            try {
+                const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+                const html = await res.text();
+                // Titre
+                const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+                if (titleMatch) title = titleMatch[1].trim();
+                // Contenu texte brut (supprime les balises HTML)
+                content = html.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+                    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+                    .replace(/<[^>]+>/g, ' ')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .slice(0, 3000);
+            } catch (err) {
+                await interaction.followUp('❌ Impossible de récupérer la page. Vérifie l\'URL.');
+                return;
+            }
+
+            // Résumé Mistral
+            let summary = '';
+            try {
+                const result = await mistralClient.chat.complete({
+                    model: 'mistral-small-latest',
+                    messages: [{
+                        role: 'user',
+                        content: `Tu es un assistant de veille technologique spécialisé en développement web Full Stack.
+
+Résume cet article en français en 3-4 phrases concises :
+- L'idée principale
+- Ce qui est pertinent pour un développeur Full Stack
+- Pourquoi c'est important à retenir
+
+Titre : ${title}
+URL : ${url}
+Contenu : ${content}
+
+Réponds uniquement avec le résumé, sans introduction.`
+                    }]
+                });
+                summary = result.choices?.[0]?.message?.content as string ?? 'Résumé indisponible.';
+            } catch {
+                await interaction.followUp('❌ Erreur Mistral lors du résumé.');
+                return;
+            }
+
+            // Envoie en validation comme un article normal
+            const article = {
+                title,
+                url,
+                source: 'Manuel',
+                summary,
+                content,
+                published_at: new Date().toISOString(),
+                score: undefined,
+            };
+
+            const id = randomUUID();
+            pendingArticles.set(id, article);
+
+            const scoreStr = '';
+            const message = `🆕 **Nouvel article à valider** *(soumis manuellement)*\n\n📌 **${title}**\n📰 Manuel\n${scoreStr}📝 ${summary}\n🔗 <${url}>`;
+
+            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder().setCustomId(`validate_${id}`).setLabel('✅ Valider').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId(`reject_${id}`).setLabel('❌ Rejeter').setStyle(ButtonStyle.Danger),
+            );
+
+            await interaction.followUp({ content: message, components: [row] });
+        }
+
         if (interaction.commandName === 'export') {
             await interaction.deferReply();
             const articles = exportAllArticles() as any[];
@@ -302,7 +445,8 @@ export async function sendForValidation(articles: PendingArticle[]) {
         const id = randomUUID();
         pendingArticles.set(id, a);
 
-        const message = `🆕 **Nouvel article à valider**\n\n📌 **${a.title}**\n📰 ${a.source}\n📝 ${a.summary ?? 'Résumé indisponible'}\n🔗 <${a.url}>`;
+        const scoreStr = a.score !== undefined ? `⭐ Score : ${a.score}/5\n` : '';
+        const message = `🆕 **Nouvel article à valider**\n\n📌 **${a.title}**\n📰 ${a.source}\n${scoreStr}📝 ${a.summary ?? 'Résumé indisponible'}\n🔗 <${a.url}>`;
 
         const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder().setCustomId(`validate_${id}`).setLabel('✅ Valider').setStyle(ButtonStyle.Success),

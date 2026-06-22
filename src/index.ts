@@ -29,7 +29,7 @@ async function collect() {
         relevantCount++;
         console.log(`📝 (${i + 1}/${newArticles.length}) Pertinent (score ${score}/5), résumé : ${article.title}`);
         const summary = await summarizeArticle(article);
-        toValidate.push({ ...article, summary });
+        toValidate.push({ ...article, summary, score });
     }
 
     if (toValidate.length > 0) {

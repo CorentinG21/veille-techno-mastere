@@ -1,8 +1,9 @@
 import RSSParser from 'rss-parser';
+import { getRSSSources } from '../storage/database.js';
 
 const parser = new RSSParser();
 
-export const RSS_SOURCES = [
+export const DEFAULT_RSS_SOURCES = [
     // Frontend & Frameworks JS
     { name: 'Dev.to', url: 'https://dev.to/feed' },
     { name: 'Smashing Magazine', url: 'https://www.smashingmagazine.com/feed/' },
@@ -34,7 +35,10 @@ export interface Article {
 export async function fetchRSSFeeds(): Promise<Article[]> {
     const articles: Article[] = [];
 
-    for (const source of RSS_SOURCES) {
+    const dbSources = getRSSSources();
+    const sources = dbSources.length > 0 ? dbSources : DEFAULT_RSS_SOURCES;
+
+    for (const source of sources) {
         try {
             const feed = await parser.parseURL(source.url);
             for (const item of feed.items.slice(0, 3)) {

@@ -40,6 +40,33 @@ export function initDB() {
       seen_at TEXT DEFAULT (datetime('now'))
     )
   `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS rss_sources (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      url TEXT UNIQUE NOT NULL,
+      added_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+}
+
+export function getRSSSources(): { id: number; name: string; url: string }[] {
+  return db.prepare(`SELECT id, name, url FROM rss_sources ORDER BY name`).all() as any[];
+}
+
+export function addRSSSource(name: string, url: string): boolean {
+  try {
+    db.prepare(`INSERT INTO rss_sources (name, url) VALUES (?, ?)`).run(name, url);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function removeRSSSource(id: number): boolean {
+  const result = db.prepare(`DELETE FROM rss_sources WHERE id = ?`).run(id);
+  return result.changes > 0;
 }
 
 export function isSeen(url: string): boolean {
