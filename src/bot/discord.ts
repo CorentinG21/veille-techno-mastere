@@ -36,6 +36,7 @@ const FRONTEND_SOURCES = ['Dev.to', 'Smashing Magazine', 'This Week in React', '
 const SECURITE_SOURCES = ['The Hacker News', 'CERT-FR (ANSSI)', 'Zero Day Initiative'];
 
 function getCategory(source: string): 'frontend' | 'backend' | 'securite' {
+    if (source.startsWith('Manuel-')) return source.replace('Manuel-', '') as 'frontend' | 'backend' | 'securite';
     if (FRONTEND_SOURCES.includes(source)) return 'frontend';
     if (SECURITE_SOURCES.includes(source)) return 'securite';
     return 'backend';
@@ -556,11 +557,29 @@ Réponds uniquement avec le résumé, sans introduction.`
                 return;
             }
 
+            // Classification thématique par Mistral
+            let category: 'frontend' | 'backend' | 'securite' = 'backend';
+            try {
+                const catResult = await mistralClient.chat.complete({
+                    model: 'mistral-small-latest',
+                    messages: [{
+                        role: 'user',
+                        content: `Classe cet article dans une seule de ces catégories : frontend, backend, securite.
+Réponds uniquement avec un mot parmi : frontend, backend, securite.
+
+Titre : ${title}
+Résumé : ${summary}`
+                    }]
+                });
+                const raw = (catResult.choices?.[0]?.message?.content as string ?? '').trim().toLowerCase();
+                if (raw === 'frontend' || raw === 'backend' || raw === 'securite') category = raw;
+            } catch { /* garde backend par défaut */ }
+
             // Envoie en validation comme un article normal
             const article = {
                 title,
                 url,
-                source: 'Manuel',
+                source: `Manuel-${category}`,
                 summary,
                 content,
                 published_at: new Date().toISOString(),
@@ -571,7 +590,8 @@ Réponds uniquement avec le résumé, sans introduction.`
             pendingArticles.set(id, article);
             savePendingValidation(id, article);
 
-            const message = `🆕 **Nouvel article à valider** *(soumis manuellement)*\n\n📌 **${title}**\n📰 Manuel\n📝 ${summary}\n🔗 <${url}>`;
+            const categoryEmoji = { frontend: '🎨', backend: '⚙️', securite: '🔒' }[category];
+            const message = `🆕 **Nouvel article à valider** *(soumis manuellement)*\n\n📌 **${title}**\n📰 Manuel · ${categoryEmoji} ${category}\n📝 ${summary}\n🔗 <${url}>`;
 
             const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
                 new ButtonBuilder().setCustomId(`validate_${id}`).setLabel('✅ Valider').setStyle(ButtonStyle.Success),
