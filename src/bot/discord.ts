@@ -209,12 +209,14 @@ export function startBot() {
                     return;
                 }
                 await interaction.deferReply({ ephemeral: true });
-                try {
-                    const result = await mistralClient.chat.complete({
-                        model: 'mistral-small-latest',
-                        messages: [{
-                            role: 'user',
-                            content: `Tu es un assistant de veille technologique Full Stack. Nous sommes en 2026.
+                let answer = '';
+                for (let attempt = 1; attempt <= 3; attempt++) {
+                    try {
+                        const result = await mistralClient.chat.complete({
+                            model: 'mistral-small-latest',
+                            messages: [{
+                                role: 'user',
+                                content: `Tu es un assistant de veille technologique Full Stack. Nous sommes en 2026.
 
 Donne plus de détails sur cet article en français. Explique :
 - Le contexte technique
@@ -226,13 +228,21 @@ Résumé : ${info.summary}
 URL : ${info.url}
 
 Sois concis et actionnable. N'utilise JAMAIS de tableaux Markdown (pas de |).`,
-                        }],
-                    });
-                    const answer = result.choices?.[0]?.message?.content as string ?? 'Réponse indisponible.';
-                    await interaction.editReply(`🔍 **${info.title}**\n\n${answer}`);
-                } catch {
-                    await interaction.editReply('❌ Erreur lors de la génération.');
+                            }],
+                        });
+                        answer = result.choices?.[0]?.message?.content as string ?? 'Réponse indisponible.';
+                        break;
+                    } catch (err: any) {
+                        console.error(`❌ Erreur "En savoir plus" (tentative ${attempt}/3):`, err?.message ?? err);
+                        if (err?.status === 429 && attempt < 3) {
+                            await new Promise(r => setTimeout(r, 30000));
+                        } else if (attempt === 3) {
+                            await interaction.editReply('❌ Mistral indisponible pour le moment, réessaie dans quelques secondes.');
+                            return;
+                        }
+                    }
                 }
+                await interaction.editReply(`🔍 **${info.title}**\n\n${answer}`);
                 return;
             }
 
